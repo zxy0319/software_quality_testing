@@ -34,7 +34,8 @@ def test_validate_diary(assistant):
     assert assistant.validate_diary("今天天气真好，去公园散步了。") is True
 
     # 首尾空格干扰测试 (体现 strip() 的必要性)
-    assert assistant.validate_diary("   带有空格的日记内容   ") is True
+
+    assert assistant.validate_diary("   这是一段带有首尾空格的日记内容   ") is True
 
     # 字数下限边界 (阈值 10)
     assert assistant.validate_diary("一二三四五六七八九十") is True  # 刚好10字
