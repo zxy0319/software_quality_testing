@@ -43,6 +43,27 @@ class PersonalAssistant:
     # 依据：低于 1000 毫升通常意味着明显脱水风险，需明确区分“偏少”与“危险”。
     WARNING_WATER_ML = 1000
 
+    # BMI 分级阈值（依据《中国成人超重和肥胖症预防控制指南》）
+    # 之所以使用国标而非 WHO 标准，是因为目标用户主要为中国成年人，
+    # 国标对超重/肥胖的界定更贴合本地人群体质特征。
+    BMI_UNDERWEIGHT_MAX = 18.5   # 低于该值视为偏瘦
+    BMI_NORMAL_MAX = 24.0        # [18.5, 24) 为正常体重
+    BMI_OVERWEIGHT_MAX = 28.0    # [24, 28) 为超重，>=28 为肥胖
+
+    # 月度预算预警阈值
+    # 依据：在个人理财场景中，花费达到预算的 80% 时即应提示节制，
+    # 给用户留出调整空间；超过 100% 则属于已经超支，必须强提醒。
+    BUDGET_WARNING_RATIO = 0.8
+    BUDGET_OVER_RATIO = 1.0
+
+    # 睡眠时长健康区间（小时）
+    # 依据：美国国家睡眠基金会建议成年人每日睡眠 7-9 小时，
+    # 这里放宽下限至 6 小时以兼顾轻度短睡眠人群的常见情况，
+    # 上限 9 小时之外则视为过度睡眠，可能与健康问题相关。
+    MIN_HEALTHY_SLEEP = 6.0
+    MAX_HEALTHY_SLEEP = 9.0
+    MAX_VALID_SLEEP = 24.0       # 一天最多 24 小时，超出即非法输入
+
     # ------------------------------------------------------------------
     # 功能 1：记账助手 - 收支限额检查
     # ------------------------------------------------------------------
@@ -131,3 +152,126 @@ class PersonalAssistant:
         #   低于 1000 毫升时，人体可能出现明显脱水症状（口渴、尿少、乏力），
         #   需要以最高优先级提醒用户立即补水，因此使用最严重的等级。
         return "Danger"
+
+    # ------------------------------------------------------------------
+    # 功能 4：健康助手 - BMI 评级
+    # ------------------------------------------------------------------
+    def evaluate_bmi(self, height_m: float, weight_kg: float) -> str:
+        """
+        根据身高体重计算 BMI 并给出体型评级。
+
+        :param height_m: 身高，单位米（float）。
+        :param weight_kg: 体重，单位公斤（float）。
+        :return: "Invalid" / "Underweight" / "Normal" / "Overweight" / "Obese"。
+        """
+        # 为什么先拦截非正数输入：
+        #   身高、体重在物理意义上必须为正数，若不优先拦截会触发
+        #   除零异常或得出无意义的负 BMI，单独返回 "Invalid" 可让上层
+        #   明确区分“非法输入”与“真实健康风险”。
+        if height_m <= 0 or weight_kg <= 0:
+            return "Invalid"
+
+        # 为什么把计算单独成行：
+        #   将 BMI 公式与分支判断解耦，方便白盒测试通过参数化
+        #   直接覆盖各 BMI 边界，也降低后续公式调整的风险。
+        bmi = weight_kg / (height_m * height_m)
+
+        # 为什么 < 18.5 判定为 Underweight：
+        #   国标界定 BMI<18.5 为体重过低，可能伴随营养不良风险，
+        #   需提示用户增加营养摄入。
+        if bmi < self.BMI_UNDERWEIGHT_MAX:
+            return "Underweight"
+
+        # 为什么 [18.5, 24) 判定为 Normal：
+        #   国标推荐的健康区间，无需健康干预，保持现状即可。
+        if bmi < self.BMI_NORMAL_MAX:
+            return "Normal"
+
+        # 为什么 [24, 28) 判定为 Overweight：
+        #   国标超重区间，慢性病风险开始上升，需提醒用户控制饮食、增加运动。
+        if bmi < self.BMI_OVERWEIGHT_MAX:
+            return "Overweight"
+
+        # 为什么 >= 28 判定为 Obese：
+        #   国标肥胖临界点，与高血压、糖尿病等强相关，
+        #   需要以最高等级提醒用户关注体重管理。
+        return "Obese"
+
+    # ------------------------------------------------------------------
+    # 功能 5：记账助手 - 月度预算预警
+    # ------------------------------------------------------------------
+    def check_monthly_budget(self, spent: float, budget: float) -> str:
+        """
+        根据本月已花金额与预算的比值给出预算状态。
+
+        :param spent: 本月已花金额。
+        :param budget: 本月预算总额，必须为正数。
+        :return: "Invalid" / "Safe" / "Warning" / "Over"。
+        """
+        # 为什么先拦截 budget <= 0：
+        #   预算为 0 或负数在业务上无意义，且会触发除零异常，
+        #   必须最先短路返回，避免后续比值计算崩溃。
+        if budget <= 0:
+            return "Invalid"
+
+        # 为什么允许 spent 为负但单独拦截：
+        #   spent 为负通常代表“退款金额大于支出”，
+        #   在统计上仍可视为安全（甚至更安全），因此不归为 Invalid，
+        #   但需要避免负比值参与后续逻辑，统一返回 "Safe"。
+        if spent < 0:
+            return "Safe"
+
+        # 为什么使用比值而非绝对差额：
+        #   不同用户预算量级差异极大（如学生 vs 工薪），
+        #   使用比值能让预警阈值在所有用户身上保持业务一致性。
+        ratio = spent / budget
+
+        # 为什么 ratio > 1.0 优先判断：
+        #   超支是最高优先级风险事件，需要立刻提醒，
+        #   优先短路返回可避免被后续 Warning 分支误覆盖。
+        if ratio > self.BUDGET_OVER_RATIO:
+            return "Over"
+
+        # 为什么 ratio >= 0.8 判定为 Warning：
+        #   达到预算 80% 时距离超支只剩一步，
+        #   此时提醒用户可以及时调整后续消费计划，避免月末超支。
+        if ratio >= self.BUDGET_WARNING_RATIO:
+            return "Warning"
+
+        # 为什么默认返回 Safe：
+        #   消费在预算 80% 以内属于正常节奏，无需打扰用户，
+        #   符合“最小提示”的产品体验原则。
+        return "Safe"
+
+    # ------------------------------------------------------------------
+    # 功能 6：生活助手 - 睡眠时长评级
+    # ------------------------------------------------------------------
+    def evaluate_sleep(self, hours: float) -> str:
+        """
+        根据每日睡眠时长给出健康评级。
+
+        :param hours: 当日睡眠小时数（float）。
+        :return: "Invalid" / "Insufficient" / "Healthy" / "Excessive"。
+        """
+        # 为什么把 [0, 24] 之外的值统一视为非法：
+        #   一天物理上不可能超过 24 小时，负数同样不存在，
+        #   优先拦截可避免错误数据污染健康评级结果。
+        if hours < 0 or hours > self.MAX_VALID_SLEEP:
+            return "Invalid"
+
+        # 为什么 < 6 判定为 Insufficient：
+        #   长期低于 6 小时睡眠会显著增加心血管和免疫系统风险，
+        #   需作为明确预警提示用户调整作息。
+        if hours < self.MIN_HEALTHY_SLEEP:
+            return "Insufficient"
+
+        # 为什么 [6, 9] 判定为 Healthy：
+        #   美国国家睡眠基金会推荐成年人 7-9 小时，
+        #   下限放宽至 6 小时以兼顾日常波动，使用闭区间保证 6 和 9 都被认可。
+        if hours <= self.MAX_HEALTHY_SLEEP:
+            return "Healthy"
+
+        # 为什么 > 9 判定为 Excessive：
+        #   长期过量睡眠同样与抑郁、代谢综合征等问题相关，
+        #   需要提示用户关注作息规律，而非简单认为“睡得多就好”。
+        return "Excessive"
