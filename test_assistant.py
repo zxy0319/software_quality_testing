@@ -146,3 +146,60 @@ def test_evaluate_sleep(assistant):
     # 过量：hours > 9
     assert assistant.evaluate_sleep(9.1) == "Excessive"
     assert assistant.evaluate_sleep(24) == "Excessive"  # 24 小时仍属合法但过量
+
+
+# ==========================================
+# 7. 验证 功能7：通用记录展示 (get_recent_records)
+# ==========================================
+def test_get_recent_records(assistant):
+    # 非法输入：非列表类型 → 返回空列表
+    assert assistant.get_recent_records(None) == []
+    assert assistant.get_recent_records("not a list") == []
+    assert assistant.get_recent_records(123) == []
+
+    # n <= 0 → 返回空列表
+    assert assistant.get_recent_records([{"time": "2026-06-10", "v": 1}], n=0) == []
+    assert assistant.get_recent_records([{"time": "2026-06-10", "v": 1}], n=-3) == []
+
+    # 空列表 → 返回空列表
+    assert assistant.get_recent_records([]) == []
+
+    # 默认 n = 10：少于 10 条全部返回，按时间倒序
+    records = [
+        {"time": "2026-06-08T10:00", "v": 1},
+        {"time": "2026-06-10T10:00", "v": 3},
+        {"time": "2026-06-09T10:00", "v": 2},
+    ]
+    result = assistant.get_recent_records(records)
+    assert len(result) == 3
+    assert result[0]["v"] == 3  # 最新的在最前
+    assert result[1]["v"] == 2
+    assert result[2]["v"] == 1
+
+    # 指定 n 小于列表长度：只截取前 n 条
+    result = assistant.get_recent_records(records, n=2)
+    assert len(result) == 2
+    assert result[0]["v"] == 3
+    assert result[1]["v"] == 2
+
+    # 指定 n 大于列表长度：返回全部
+    result = assistant.get_recent_records(records, n=100)
+    assert len(result) == 3
+
+    # 不修改原列表（无副作用）
+    original = [
+        {"time": "2026-06-08T10:00", "v": 1},
+        {"time": "2026-06-10T10:00", "v": 3},
+    ]
+    snapshot = list(original)
+    assistant.get_recent_records(original)
+    assert original == snapshot
+
+    # 记录缺少 time 字段时使用空字符串占位，不抛异常
+    records_with_missing = [
+        {"v": "no time"},
+        {"time": "2026-06-10T10:00", "v": "has time"},
+    ]
+    result = assistant.get_recent_records(records_with_missing)
+    assert len(result) == 2
+    assert result[0]["v"] == "has time"  # 有时间的排在前面
